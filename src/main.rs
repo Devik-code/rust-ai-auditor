@@ -1,42 +1,50 @@
+use async_graphql::http::GraphiQLSource;
+use async_graphql_axum::{GraphQLRequest, GraphQLResponse};
 use axum::{
     extract::State,
     http::StatusCode,
+    response::{Html, IntoResponse},
     routing::{get, post},
     Json, Router,
 };
 use sqlx::{postgres::PgPoolOptions, PgPool};
 
 mod models;
-use models::{AiAudit, CreateAuditRequest};
+mod schema;
+mod services;
+
+use models::CreateAuditRequest;
+use schema::{AppSchema, MutationRoot, QueryRoot};
 
 #[derive(Clone)]
 struct AppState {
     db: PgPool,
+    schema: AppSchema,
 }
 
-async fn create_audit(
+async fn create_audit_handler(
     State(state): State<AppState>,
     Json(payload): Json<CreateAuditRequest>,
-) -> Result<(StatusCode, Json<AiAudit>), StatusCode> {
-    let audit = sqlx::query_as::<_, AiAudit>(
-        r#"
-        INSERT INTO ai_audits (prompt, codigo_generado, es_valido, error_compilacion)
-        VALUES ($1, $2, $3, $4)
-        RETURNING id, prompt, codigo_generado, es_valido, error_compilacion, created_at
-        "#,
-    )
-    .bind(&payload.prompt)
-    .bind(&payload.codigo_generado)
-    .bind(payload.es_valido)
-    .bind(&payload.error_compilacion)
-    .fetch_one(&state.db)
-    .await
-    .map_err(|e| {
-        eprintln!("Database error: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+) -> Result<(StatusCode, Json<models::AiAudit>), StatusCode> {
+    let audit = services::create_audit(&state.db, &payload)
+        .await
+        .map_err(|e| {
+            eprintln!("Database error: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     Ok((StatusCode::CREATED, Json(audit)))
+}
+
+async fn graphql_handler(
+    State(state): State<AppState>,
+    req: GraphQLRequest,
+) -> GraphQLResponse {
+    state.schema.execute(req.into_inner()).await.into()
+}
+
+async fn graphiql() -> impl IntoResponse {
+    Html(GraphiQLSource::build().endpoint("/graphql").finish())
 }
 
 #[tokio::main]
@@ -78,13 +86,19 @@ async fn main() {
 
     println!("✅ Migraciones ejecutadas correctamente");
 
+    // Create GraphQL schema
+    let schema = async_graphql::Schema::build(QueryRoot, MutationRoot, async_graphql::EmptySubscription)
+        .data(db.clone())
+        .finish();
+
     // Create app state
-    let state = AppState { db };
+    let state = AppState { db, schema };
 
     // Create router with state
     let app = Router::new()
-        .route("/", get(|| async { "Hola Mundo" }))
-        .route("/audit", post(create_audit))
+        .route("/", get(graphiql))
+        .route("/graphql", post(graphql_handler))
+        .route("/audit", post(create_audit_handler))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
@@ -92,5 +106,6 @@ async fn main() {
         .unwrap();
 
     println!("Servidor escuchando en http://localhost:3000");
+    println!("🔮 GraphiQL IDE disponible en http://localhost:3000");
     axum::serve(listener, app).await.unwrap();
 }

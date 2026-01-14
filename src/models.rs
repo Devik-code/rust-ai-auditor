@@ -1,9 +1,10 @@
+use async_graphql::{InputObject, SimpleObject};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use uuid::Uuid;
 
-#[derive(Debug, Serialize, Deserialize, FromRow)]
+#[derive(Debug, Serialize, Deserialize, FromRow, SimpleObject)]
 pub struct AiAudit {
     pub id: Uuid,
     pub prompt: String,
@@ -13,7 +14,7 @@ pub struct AiAudit {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, InputObject)]
 pub struct CreateAuditRequest {
     pub prompt: String,
     pub codigo_generado: String,
