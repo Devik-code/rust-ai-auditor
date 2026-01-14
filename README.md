@@ -95,18 +95,26 @@ docker logs rust-db
 docker logs -f rust-db
 ```
 
-## API Usage
+## Available Routes
+
+| Route | Method | Description |
+|-------|--------|-------------|
+| `/` | GET | GraphiQL IDE (browser) |
+| `/graphql` | POST | GraphQL endpoint |
+| `/audit` | POST | REST API - Create audit |
+
+## REST API
 
 ### Create Audit
 
-Create a new AI code audit record.
+Create a new AI code audit record. The `es_valido` and `error_compilacion` fields are automatically calculated by the validation engine.
 
 **Endpoint:** `POST /audit`
 
 **Request:**
 
 ```bash
-curl -X POST http://localhost:3000/audit -H "Content-Type: application/json" -d '{"prompt":"Crea una función que sume dos números","codigo_generado":"fn suma(a: i32, b: i32) -> i32 { a + b }","es_valido":true,"error_compilacion":null}'
+curl -X POST http://localhost:3000/audit -H "Content-Type: application/json" -d '{"prompt":"Crea una función que sume dos números","codigo_generado":"pub fn suma(a: i32, b: i32) -> i32 { a + b }"}'
 ```
 
 **Response (201 Created):**
@@ -115,14 +123,76 @@ curl -X POST http://localhost:3000/audit -H "Content-Type: application/json" -d 
 {
   "id": "bfc949cc-743c-44d5-bc94-8ada8fed8fbc",
   "prompt": "Crea una función que sume dos números",
-  "codigo_generado": "fn suma(a: i32, b: i32) -> i32 { a + b }",
+  "codigo_generado": "pub fn suma(a: i32, b: i32) -> i32 { a + b }",
   "es_valido": true,
   "error_compilacion": null,
   "created_at": "2026-01-13T20:02:18.213246Z"
 }
 ```
 
-### Verify Data in Database
+## GraphQL API
+
+Open `http://localhost:3000` in your browser to access the GraphiQL IDE.
+
+### Query: List all audits
+
+```graphql
+query {
+  audits {
+    id
+    prompt
+    codigoGenerado
+    esValido
+    errorCompilacion
+    createdAt
+  }
+}
+```
+
+### Query: Get audit by ID
+
+```graphql
+query {
+  audit(id: "bfc949cc-743c-44d5-bc94-8ada8fed8fbc") {
+    prompt
+    codigoGenerado
+    esValido
+    errorCompilacion
+  }
+}
+```
+
+### Mutation: Create audit
+
+```graphql
+mutation {
+  createAudit(input: {
+    prompt: "test desde graphql"
+    codigoGenerado: "pub fn hello() { println!(\"Hello\"); }"
+  }) {
+    id
+    esValido
+    errorCompilacion
+  }
+}
+```
+
+### GraphQL via curl
+
+```bash
+curl -X POST http://localhost:3000/graphql -H "Content-Type: application/json" -d '{"query":"{ audits { id esValido } }"}'
+```
+
+## Validation Rules
+
+The code validator checks for:
+- Balanced braces `{}`, parentheses `()`, and brackets `[]`
+- Missing `fn main()` in standalone programs
+- Dangerous patterns (`std::process::Command`, `std::fs::remove`, `unsafe`)
+- Missing semicolons in `let` statements
+- Empty function bodies
+
+## Verify Data in Database
 
 To check the stored audits:
 

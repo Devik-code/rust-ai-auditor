@@ -18,6 +18,4 @@ pub struct AiAudit {
 pub struct CreateAuditRequest {
     pub prompt: String,
     pub codigo_generado: String,
-    pub es_valido: bool,
-    pub error_compilacion: Option<String>,
 }
