@@ -27,3 +27,7 @@ target
 
 # Environment variables
 .env
+.env.production
+
+# Docker
+.dockerignore

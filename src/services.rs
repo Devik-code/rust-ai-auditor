@@ -1,175 +1,146 @@
-use std::fs;
-use std::process::Command;
+//! Contains the core business logic for database operations.
 
+use crate::{
+    auditor,
+    error::AppError,
+    models::{AiAudit, AuditStats, CommonError, CreateAuditRequest},
+};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::models::{AiAudit, CreateAuditRequest};
-
-/// Validates Rust code and returns (is_valid, error_message)
-pub fn validate_code(codigo: &str) -> (bool, Option<String>) {
-    let mut errors: Vec<String> = Vec::new();
-
-    // Check for balanced braces
-    let open_braces = codigo.matches('{').count();
-    let close_braces = codigo.matches('}').count();
-    if open_braces != close_braces {
-        errors.push(format!(
-            "Llaves desbalanceadas: {} abiertas, {} cerradas",
-            open_braces, close_braces
-        ));
-    }
-
-    // Check for balanced parentheses
-    let open_parens = codigo.matches('(').count();
-    let close_parens = codigo.matches(')').count();
-    if open_parens != close_parens {
-        errors.push(format!(
-            "Paréntesis desbalanceados: {} abiertos, {} cerrados",
-            open_parens, close_parens
-        ));
-    }
-
-    // Check for balanced brackets
-    let open_brackets = codigo.matches('[').count();
-    let close_brackets = codigo.matches(']').count();
-    if open_brackets != close_brackets {
-        errors.push(format!(
-            "Corchetes desbalanceados: {} abiertos, {} cerrados",
-            open_brackets, close_brackets
-        ));
-    }
-
-    // Check for fn main if it looks like a complete program
-    let has_fn = codigo.contains("fn ");
-    let has_main = codigo.contains("fn main");
-    if has_fn && !has_main && !codigo.contains("pub fn") && !codigo.contains("impl ") {
-        // Looks like standalone functions without main
-        errors.push("Posible falta de función main() para un programa ejecutable".to_string());
-    }
-
-    // Check for prohibited/dangerous patterns
-    let prohibited_patterns = [
-        ("std::process::Command", "Uso de Command puede ser peligroso"),
-        ("std::fs::remove", "Operación de eliminación de archivos detectada"),
-        ("unsafe {", "Bloque unsafe detectado - requiere revisión manual"),
-    ];
-
-    for (pattern, message) in prohibited_patterns {
-        if codigo.contains(pattern) {
-            errors.push(message.to_string());
-        }
-    }
-
-    // Check for common syntax errors
-    if codigo.contains("let ") && !codigo.contains(';') {
-        errors.push("Posible falta de punto y coma en declaración let".to_string());
-    }
-
-    // Check for empty function bodies
-    if codigo.contains("fn ") && codigo.contains("{}") {
-        errors.push("Función con cuerpo vacío detectada".to_string());
-    }
-
-    if errors.is_empty() {
-        (true, None)
-    } else {
-        let error_message = errors.join("; ");
-        tracing::warn!(errors = %error_message, "Código marcado como inválido");
-        (false, Some(error_message))
-    }
-}
-
-/// Compiles Rust code using rustc and returns compilation result
-/// Saves code to temp file, compiles as library, and captures errors
-pub fn check_compilation(code: &str) -> Result<(), String> {
-    let temp_file = "/tmp/audit_test.rs";
-    let out_dir = "/tmp";
-
-    // Write code to temp file
-    fs::write(temp_file, code)
-        .map_err(|e| format!("Failed to write temp file: {}", e))?;
-
-    // Execute rustc with --crate-type lib to not require fn main()
-    let output = Command::new("rustc")
-        .arg("--crate-type")
-        .arg("lib")
-        .arg("--out-dir")
-        .arg(out_dir)
-        .arg(temp_file)
-        .output()
-        .map_err(|e| format!("Failed to execute rustc: {}", e))?;
-
-    // Clean up temp file
-    let _ = fs::remove_file(temp_file);
-    // Clean up compiled library if exists
-    let _ = fs::remove_file("/tmp/libaudit_test.rlib");
-
-    if output.status.success() {
-        tracing::info!("Código compilado exitosamente");
-        Ok(())
-    } else {
-        let error = String::from_utf8_lossy(&output.stderr).to_string();
-        tracing::warn!(error = %error, "Error de compilación detectado");
-        Err(error)
-    }
-}
-
-/// Checks if rustc is available on the system
-pub fn check_rustc_available() -> Result<String, String> {
-    let output = Command::new("rustc")
-        .arg("--version")
-        .output()
-        .map_err(|e| format!("Failed to execute rustc: {}", e))?;
-
-    if output.status.success() {
-        let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        tracing::info!(rustc_version = %version, "rustc disponible en el sistema");
-        Ok(version)
-    } else {
-        let error = String::from_utf8_lossy(&output.stderr);
-        Err(format!("rustc failed: {}", error))
-    }
-}
-
+/// Retrieves a list of all AI audits from the database, sorted by creation date.
+///
+/// # Arguments
+///
+/// * `pool` - A reference to the database connection pool.
+///
+/// # Returns
+///
+/// * `Ok(Vec<AiAudit>)` - A vector of audit records.
+/// * `Err(AppError::Sqlx)` - If a database query fails.
 #[tracing::instrument(skip(pool))]
-pub async fn list_audits(pool: &PgPool) -> Result<Vec<AiAudit>, sqlx::Error> {
+pub async fn list_audits(pool: &PgPool) -> Result<Vec<AiAudit>, AppError> {
     sqlx::query_as::<_, AiAudit>(
-        "SELECT id, prompt, codigo_generado, es_valido, error_compilacion, created_at FROM ai_audits ORDER BY created_at DESC"
+        "SELECT id, prompt, generated_code, is_valid, compilation_error, created_at FROM ai_audits ORDER BY created_at DESC"
     )
     .fetch_all(pool)
     .await
+    .map_err(AppError::from)
 }
 
+/// Retrieves a single AI audit by its ID.
+///
+/// # Arguments
+///
+/// * `pool` - A reference to the database connection pool.
+/// * `id` - The UUID of the audit to retrieve.
+///
+/// # Returns
+///
+/// * `Ok(Option<AiAudit>)` - The audit record if found, otherwise `None`.
+/// * `Err(AppError::Sqlx)` - If a database query fails.
 #[tracing::instrument(skip(pool))]
-pub async fn get_audit_by_id(pool: &PgPool, id: Uuid) -> Result<Option<AiAudit>, sqlx::Error> {
+pub async fn get_audit_by_id(pool: &PgPool, id: Uuid) -> Result<Option<AiAudit>, AppError> {
     sqlx::query_as::<_, AiAudit>(
-        "SELECT id, prompt, codigo_generado, es_valido, error_compilacion, created_at FROM ai_audits WHERE id = $1"
+        "SELECT id, prompt, generated_code, is_valid, compilation_error, created_at FROM ai_audits WHERE id = $1"
     )
     .bind(id)
     .fetch_optional(pool)
     .await
+    .map_err(AppError::from)
 }
 
-#[tracing::instrument(skip(pool))]
-pub async fn create_audit(pool: &PgPool, input: &CreateAuditRequest) -> Result<AiAudit, sqlx::Error> {
-    // Compile code and get validation result
-    let (es_valido, error_compilacion) = match check_compilation(&input.codigo_generado) {
+/// Creates a new AI audit record in the database.
+///
+/// This function first compiles the provided code using `auditor::check_compilation`.
+/// Based on the result, it sets the `is_valid` and `compilation_error` fields
+/// before inserting the new record into the database.
+///
+/// # Arguments
+///
+/// * `pool` - A reference to the database connection pool.
+/// * `input` - The request payload containing the prompt and generated code.
+///
+/// # Returns
+///
+/// * `Ok(AiAudit)` - The newly created audit record.
+/// * `Err(AppError)` - If the code compilation or database insertion fails.
+#[tracing::instrument(skip(pool, input))]
+pub async fn create_audit(pool: &PgPool, input: &CreateAuditRequest) -> Result<AiAudit, AppError> {
+    // Compile the generated code to determine its validity.
+    let (is_valid, compilation_error) = match auditor::check_compilation(&input.generated_code) {
         Ok(()) => (true, None),
-        Err(e) => (false, Some(e)),
+        Err(AppError::Audit(e)) => (false, Some(e)),
+        Err(e) => return Err(e), // Propagate other error types
     };
 
     sqlx::query_as::<_, AiAudit>(
         r#"
-        INSERT INTO ai_audits (prompt, codigo_generado, es_valido, error_compilacion)
+        INSERT INTO ai_audits (prompt, generated_code, is_valid, compilation_error)
         VALUES ($1, $2, $3, $4)
-        RETURNING id, prompt, codigo_generado, es_valido, error_compilacion, created_at
+        RETURNING id, prompt, generated_code, is_valid, compilation_error, created_at
         "#,
     )
     .bind(&input.prompt)
-    .bind(&input.codigo_generado)
-    .bind(es_valido)
-    .bind(&error_compilacion)
+    .bind(&input.generated_code)
+    .bind(is_valid)
+    .bind(compilation_error)
     .fetch_one(pool)
     .await
+    .map_err(AppError::from)
+}
+
+/// Calculates and retrieves statistics about all AI audits.
+///
+/// # Arguments
+///
+/// * `pool` - A reference to the database connection pool.
+///
+/// # Returns
+///
+/// * `Ok(AuditStats)` - The calculated statistics.
+/// * `Err(AppError::Sqlx)` - If any database query fails.
+#[tracing::instrument(skip(pool))]
+pub async fn get_audit_stats(pool: &PgPool) -> Result<AuditStats, AppError> {
+    // Get total and valid counts.
+    let (total_audits, valid_audits): (i64, i64) = sqlx::query_as(
+        "SELECT
+            COUNT(*) as total,
+            COUNT(*) FILTER (WHERE is_valid = true) as valid
+         FROM ai_audits",
+    )
+    .fetch_one(pool)
+    .await?;
+
+    let invalid_audits = total_audits - valid_audits;
+    let validation_rate = if total_audits > 0 {
+        valid_audits as f64 / total_audits as f64
+    } else {
+        0.0
+    };
+
+    // Get the most common compilation errors.
+    let common_errors = sqlx::query_as::<_, CommonError>(
+        r#"
+        SELECT
+            LEFT(compilation_error, 200) as error_message,
+            COUNT(*) as frequency
+        FROM ai_audits
+        WHERE compilation_error IS NOT NULL
+          AND compilation_error != ''
+        GROUP BY LEFT(compilation_error, 200)
+        ORDER BY frequency DESC
+        LIMIT 10
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(AuditStats {
+        total_audits,
+        valid_audits,
+        invalid_audits,
+        validation_rate,
+        common_errors,
+    })
 }

@@ -1,0 +1,46 @@
+services:
+  # Base de datos PostgreSQL con healthcheck
+  db:
+    image: postgres:18-alpine
+    container_name: rust-ai-auditor-db
+    environment:
+      POSTGRES_DB: ai_auditor
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ai_auditor"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks:
+      - auditor-network
+
+  # Aplicación Rust
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rust-ai-auditor-app
+    environment:
+      DATABASE_URL: postgres://postgres:password@db:5432/ai_auditor
+      RUST_LOG: info
+    ports:
+      - "3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - auditor-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+
+networks:
+  auditor-network:
+    driver: bridge
