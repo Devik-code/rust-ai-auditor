@@ -71,10 +71,13 @@ pub fn validate_code(codigo: &str) -> (bool, Option<String>) {
     if errors.is_empty() {
         (true, None)
     } else {
-        (false, Some(errors.join("; ")))
+        let error_message = errors.join("; ");
+        tracing::warn!(errors = %error_message, "Código marcado como inválido");
+        (false, Some(error_message))
     }
 }
 
+#[tracing::instrument(skip(pool))]
 pub async fn list_audits(pool: &PgPool) -> Result<Vec<AiAudit>, sqlx::Error> {
     sqlx::query_as::<_, AiAudit>(
         "SELECT id, prompt, codigo_generado, es_valido, error_compilacion, created_at FROM ai_audits ORDER BY created_at DESC"
@@ -83,6 +86,7 @@ pub async fn list_audits(pool: &PgPool) -> Result<Vec<AiAudit>, sqlx::Error> {
     .await
 }
 
+#[tracing::instrument(skip(pool))]
 pub async fn get_audit_by_id(pool: &PgPool, id: Uuid) -> Result<Option<AiAudit>, sqlx::Error> {
     sqlx::query_as::<_, AiAudit>(
         "SELECT id, prompt, codigo_generado, es_valido, error_compilacion, created_at FROM ai_audits WHERE id = $1"
@@ -92,6 +96,7 @@ pub async fn get_audit_by_id(pool: &PgPool, id: Uuid) -> Result<Option<AiAudit>,
     .await
 }
 
+#[tracing::instrument(skip(pool))]
 pub async fn create_audit(pool: &PgPool, input: &CreateAuditRequest) -> Result<AiAudit, sqlx::Error> {
     // Validate code before inserting
     let (es_valido, error_compilacion) = validate_code(&input.codigo_generado);

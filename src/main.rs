@@ -8,6 +8,7 @@ use axum::{
     Json, Router,
 };
 use sqlx::{postgres::PgPoolOptions, PgPool};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod models;
 mod schema;
@@ -29,7 +30,7 @@ async fn create_audit_handler(
     let audit = services::create_audit(&state.db, &payload)
         .await
         .map_err(|e| {
-            eprintln!("Database error: {}", e);
+            tracing::error!("Database error: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
@@ -49,6 +50,15 @@ async fn graphiql() -> impl IntoResponse {
 
 #[tokio::main]
 async fn main() {
+    // Initialize tracing subscriber with INFO level by default
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "rust_ai_auditor=info".into()),
+        )
+        .with(tracing_subscriber::fmt::layer())
+        .init();
+
     // Load .env file
     dotenvy::dotenv().ok();
 
@@ -73,8 +83,8 @@ async fn main() {
             panic!("Failed to execute test query: {}", e);
         });
 
-    println!("🚀 Conexión exitosa a Postgres");
-    println!("📊 Database version: {}", version.0);
+    tracing::info!("🚀 Conexión exitosa a Postgres");
+    tracing::info!(db_version = %version.0, "📊 Database connected");
 
     // Run database migrations
     sqlx::migrate!()
@@ -84,7 +94,7 @@ async fn main() {
             panic!("Failed to run migrations: {}", e);
         });
 
-    println!("✅ Migraciones ejecutadas correctamente");
+    tracing::info!("✅ Migraciones ejecutadas correctamente");
 
     // Create GraphQL schema
     let schema = async_graphql::Schema::build(QueryRoot, MutationRoot, async_graphql::EmptySubscription)
@@ -105,7 +115,7 @@ async fn main() {
         .await
         .unwrap();
 
-    println!("Servidor escuchando en http://localhost:3000");
-    println!("🔮 GraphiQL IDE disponible en http://localhost:3000");
+    tracing::info!("Servidor escuchando en http://localhost:3000");
+    tracing::info!("🔮 GraphiQL IDE disponible en http://localhost:3000");
     axum::serve(listener, app).await.unwrap();
 }
