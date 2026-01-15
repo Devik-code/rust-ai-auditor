@@ -97,8 +97,8 @@ async fn main() {
     tracing::info!("✅ Migraciones ejecutadas correctamente");
 
     // Test process execution permissions
-    match services::check_compilation("") {
-        Ok(()) => tracing::info!("✅ Permisos de ejecución verificados"),
+    match services::check_rustc_available() {
+        Ok(version) => tracing::info!(version = %version, "✅ Compilador Rust disponible"),
         Err(e) => tracing::warn!("⚠️ No se puede ejecutar rustc: {}", e),
     }
 

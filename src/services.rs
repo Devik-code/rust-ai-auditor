@@ -1,3 +1,4 @@
+use std::fs;
 use std::process::Command;
 
 use sqlx::PgPool;
@@ -79,19 +80,52 @@ pub fn validate_code(codigo: &str) -> (bool, Option<String>) {
     }
 }
 
-/// Mock function to test process execution permissions
-/// Executes `rustc --version` to verify the server can run processes
-#[allow(dead_code)]
-pub fn check_compilation(_code: &str) -> Result<(), String> {
+/// Compiles Rust code using rustc and returns compilation result
+/// Saves code to temp file, compiles as library, and captures errors
+pub fn check_compilation(code: &str) -> Result<(), String> {
+    let temp_file = "/tmp/audit_test.rs";
+    let out_dir = "/tmp";
+
+    // Write code to temp file
+    fs::write(temp_file, code)
+        .map_err(|e| format!("Failed to write temp file: {}", e))?;
+
+    // Execute rustc with --crate-type lib to not require fn main()
+    let output = Command::new("rustc")
+        .arg("--crate-type")
+        .arg("lib")
+        .arg("--out-dir")
+        .arg(out_dir)
+        .arg(temp_file)
+        .output()
+        .map_err(|e| format!("Failed to execute rustc: {}", e))?;
+
+    // Clean up temp file
+    let _ = fs::remove_file(temp_file);
+    // Clean up compiled library if exists
+    let _ = fs::remove_file("/tmp/libaudit_test.rlib");
+
+    if output.status.success() {
+        tracing::info!("Código compilado exitosamente");
+        Ok(())
+    } else {
+        let error = String::from_utf8_lossy(&output.stderr).to_string();
+        tracing::warn!(error = %error, "Error de compilación detectado");
+        Err(error)
+    }
+}
+
+/// Checks if rustc is available on the system
+pub fn check_rustc_available() -> Result<String, String> {
     let output = Command::new("rustc")
         .arg("--version")
         .output()
         .map_err(|e| format!("Failed to execute rustc: {}", e))?;
 
     if output.status.success() {
-        let version = String::from_utf8_lossy(&output.stdout);
-        tracing::info!(rustc_version = %version.trim(), "rustc disponible en el sistema");
-        Ok(())
+        let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        tracing::info!(rustc_version = %version, "rustc disponible en el sistema");
+        Ok(version)
     } else {
         let error = String::from_utf8_lossy(&output.stderr);
         Err(format!("rustc failed: {}", error))
@@ -119,8 +153,11 @@ pub async fn get_audit_by_id(pool: &PgPool, id: Uuid) -> Result<Option<AiAudit>,
 
 #[tracing::instrument(skip(pool))]
 pub async fn create_audit(pool: &PgPool, input: &CreateAuditRequest) -> Result<AiAudit, sqlx::Error> {
-    // Validate code before inserting
-    let (es_valido, error_compilacion) = validate_code(&input.codigo_generado);
+    // Compile code and get validation result
+    let (es_valido, error_compilacion) = match check_compilation(&input.codigo_generado) {
+        Ok(()) => (true, None),
+        Err(e) => (false, Some(e)),
+    };
 
     sqlx::query_as::<_, AiAudit>(
         r#"
