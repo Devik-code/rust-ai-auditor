@@ -1,3 +1,5 @@
+use std::process::Command;
+
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -74,6 +76,25 @@ pub fn validate_code(codigo: &str) -> (bool, Option<String>) {
         let error_message = errors.join("; ");
         tracing::warn!(errors = %error_message, "Código marcado como inválido");
         (false, Some(error_message))
+    }
+}
+
+/// Mock function to test process execution permissions
+/// Executes `rustc --version` to verify the server can run processes
+#[allow(dead_code)]
+pub fn check_compilation(_code: &str) -> Result<(), String> {
+    let output = Command::new("rustc")
+        .arg("--version")
+        .output()
+        .map_err(|e| format!("Failed to execute rustc: {}", e))?;
+
+    if output.status.success() {
+        let version = String::from_utf8_lossy(&output.stdout);
+        tracing::info!(rustc_version = %version.trim(), "rustc disponible en el sistema");
+        Ok(())
+    } else {
+        let error = String::from_utf8_lossy(&output.stderr);
+        Err(format!("rustc failed: {}", error))
     }
 }
 

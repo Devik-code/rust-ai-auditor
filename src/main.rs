@@ -96,6 +96,12 @@ async fn main() {
 
     tracing::info!("✅ Migraciones ejecutadas correctamente");
 
+    // Test process execution permissions
+    match services::check_compilation("") {
+        Ok(()) => tracing::info!("✅ Permisos de ejecución verificados"),
+        Err(e) => tracing::warn!("⚠️ No se puede ejecutar rustc: {}", e),
+    }
+
     // Create GraphQL schema
     let schema = async_graphql::Schema::build(QueryRoot, MutationRoot, async_graphql::EmptySubscription)
         .data(db.clone())
